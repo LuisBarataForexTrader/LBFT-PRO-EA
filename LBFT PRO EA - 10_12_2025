@@ -1,0 +1,1423 @@
+//+------------------------------------------------------------------+
+//|                                 ForexFlexNoMartingale.mq5        |
+//|                  Versão Segura do Forex Flex EA                 |
+//|                 SEM MARTINGALE - Proteção Total                 |
+//|             COM SELEÇÃO DE ESTRATÉGIA PARA TESTES               |
+//+------------------------------------------------------------------+
+#property copyright "Forex Flex EA No Martingale Version"
+#property version   "5.4"
+#property description "EA flexível sem martingale com seleção de estratégia"
+#property strict
+
+#include <Trade\Trade.mqh>
+#include <Trade\AccountInfo.mqh>
+#include <Indicators\Trend.mqh>
+#include <Indicators\Oscilators.mqh>
+#include <Indicators\BillWilliams.mqh>
+
+//+------------------------------------------------------------------+
+//| CONFIGURAÇÕES PRINCIPAIS                                        |
+//+------------------------------------------------------------------+
+enum ENUM_STRATEGY_TYPE
+{
+   STRATEGY_TREND,      // Estratégia de Tendência
+   STRATEGY_GRID,       // Estratégia de Grid
+   STRATEGY_SCALPER,    // Estratégia Scalper
+   STRATEGY_HYBRID      // Estratégia Híbrida
+};
+
+enum ENUM_TIMEFRAME_MODE
+{
+   MODE_M15_H1,         // M15 para entrada, H1 para tendência
+   MODE_H1_H4,          // H1 para entrada, H4 para tendência
+   MODE_H4_D1,          // H4 para entrada, D1 para tendência
+   MODE_MULTI_TF        // Múltiplos timeframes
+};
+
+//+------------------------------------------------------------------+
+//| PARÂMETROS DE ESTRATÉGIA                                        |
+//+------------------------------------------------------------------+
+input string   SETUP_HEADER = "=== CONFIGURAÇÃO PRINCIPAL ===";
+input ENUM_STRATEGY_TYPE Strategy_Type = STRATEGY_HYBRID;  // Tipo de Estratégia
+input bool     Enable_Strategy_Trend = true;               // Ativar estratégia Trend
+input bool     Enable_Strategy_Grid = true;                // Ativar estratégia Grid
+input bool     Enable_Strategy_Scalper = true;             // Ativar estratégia Scalper
+input ENUM_TIMEFRAME_MODE Timeframe_Mode = MODE_H1_H4;     // Modo de Timeframe
+input int      Magic_Number = 777888;                      // Número Mágico
+input bool     Enable_Daily_Stop = true;                   // Stop Diário
+input double   Daily_Profit_Target = 5.0;                  // Meta de Lucro Diário (%)
+input double   Daily_Loss_Limit = 3.0;                     // Limite de Perda Diário (%)
+
+input string   RISK_HEADER = "=== GESTÃO DE RISCO ===";
+input double   Fixed_Lot_Size = 0.1;                       // Tamanho Fixo do Lote
+input bool     Use_Fixed_Lot = true;                       // Usar Lote Fixo
+input bool     Use_Dynamic_Lot = false;                    // Usar Lote Dinâmico (1%)
+input double   Max_Risk_Percent = 5.0;                     // Risco Máximo (%)
+input double   Max_Spread = 20.0;                          // Spread Máximo (pontos)
+input int      Max_Open_Trades = 5;                        // Máximo de Trades Abertos
+input int      Trade_Cooldown = 60;                        // Cooldown entre Trades (segundos)
+
+input string   TREND_HEADER = "=== CONFIGURAÇÃO TREND ===";
+input int      Trend_EMA_Period = 50;                      // Período EMA Tendência
+input int      Trend_ADX_Period = 14;                      // Período ADX Tendência
+input int      Trend_ADX_Threshold = 25;                   // Limiar ADX Tendência
+input double   Trend_TP_Factor = 2.0;                      // Fator TP (x ATR)
+input double   Trend_SL_Factor = 1.5;                      // Fator SL (x ATR)
+
+input string   GRID_HEADER = "=== CONFIGURAÇÃO GRID ===";
+input int      Grid_Levels = 5;                            // Níveis do Grid
+input double   Grid_Spacing = 30.0;                        // Espaçamento do Grid (pontos)
+input double   Grid_TP_Profit = 10.0;                      // TP por Nível (pontos)
+input bool     Grid_Use_TP_All = false;                    // TP no Fechamento Total
+input double   Grid_Max_Drawdown = 15.0;                   // Drawdown Máximo do Grid (%)
+
+input string   SCALPER_HEADER = "=== CONFIGURAÇÃO SCALPER ===";
+input int      Scalper_TP_Pips = 10;                       // TP Scalper (pontos)
+input int      Scalper_SL_Pips = 20;                       // SL Scalper (pontos)
+input int      Scalper_Min_ADX = 20;                       // ADX Mínimo Scalper
+input bool     Scalper_Use_Bollinger = true;               // Usar Bollinger Scalper
+input double   Scalper_BB_Deviation = 2.0;                 // Desvio Bollinger
+
+input string   FILTERS_HEADER = "=== FILTROS ===";
+input bool     Use_Time_Filter = true;                     // Usar Filtro de Tempo
+input string   Trading_Start_Time = "00:00";               // Início Trading
+input string   Trading_End_Time = "23:59";                 // Fim Trading
+input bool     Use_News_Filter = false;                    // Filtro de Notícias
+input int      News_Before_Minutes = 60;                   // Minutos antes da Notícia
+input int      News_After_Minutes = 30;                    // Minutos após Notícia
+input bool     Use_Friday_Close = false;                   // Fechar sexta-feira (DESATIVADO para testes)
+input int      Friday_Close_Hour = 18;                     // Hora fechamento sexta
+input int      Friday_Close_Minute = 0;                    // Minuto fechamento sexta
+
+input string   ADVANCED_HEADER = "=== CONFIGURAÇÕES AVANÇADAS ===";
+input bool     Use_Trailing_Stop = true;                   // Usar Trailing Stop
+input double   Trailing_Start = 20.0;                      // Início Trailing (pontos)
+input double   Trailing_Step = 10.0;                       // Passo Trailing (pontos)
+input bool     Use_Break_Even = true;                      // Usar Break Even
+input double   Break_Even_At = 15.0;                       // Break Even em (pontos)
+input bool     Enable_Hedge = false;                       // Ativar Hedge
+input bool     Enable_Debug = true;                        // Modo Debug
+input bool     Show_Strategy_Info = true;                  // Mostrar info da estratégia
+
+//+------------------------------------------------------------------+
+//| VARIÁVEIS GLOBAIS                                               |
+//+------------------------------------------------------------------+
+CTrade trade;
+CAccountInfo account;
+int dailyTradesCount = 0;
+double dailyProfit = 0;
+double dailyLoss = 0;
+datetime lastTradeTime = 0;
+datetime lastDailyReset = 0;
+double initialDailyBalance = 0;
+double highestBalance = 0;
+double currentLotSize = 0;
+int openPositions = 0;
+double totalGridInvestment = 0;
+bool fridayClosed = false;
+datetime lastFridayCloseTime = 0;
+
+// Indicadores
+int handleATR = INVALID_HANDLE;
+int handleADX = INVALID_HANDLE;
+int handleEMA20 = INVALID_HANDLE;
+int handleEMA50 = INVALID_HANDLE;
+int handleBB = INVALID_HANDLE;
+
+//+------------------------------------------------------------------+
+//| ESTRUTURAS                                                      |
+//+------------------------------------------------------------------+
+struct MarketAnalysis
+{
+   double trendStrength;
+   double volatility;
+   bool isTrending;
+   bool isRanging;
+   double adxValue;
+   double emaFast;
+   double emaSlow;
+};
+
+MarketAnalysis market;
+
+//+------------------------------------------------------------------+
+//| FUNÇÕES AUXILIARES                                              |
+//+------------------------------------------------------------------+
+string GetStrategyName()
+{
+   string strategyName = "";
+   
+   switch(Strategy_Type)
+   {
+      case STRATEGY_TREND:
+         strategyName = "TREND (Tendência)";
+         break;
+      case STRATEGY_GRID:
+         strategyName = "GRID (Grade)";
+         break;
+      case STRATEGY_SCALPER:
+         strategyName = "SCALPER (Scalping)";
+         break;
+      case STRATEGY_HYBRID:
+         strategyName = "HYBRID (Híbrida)";
+         break;
+      default:
+         strategyName = "DESCONHECIDA";
+   }
+   
+   return strategyName;
+}
+
+string GetTimeframeModeName()
+{
+   string modeName = "";
+   
+   switch(Timeframe_Mode)
+   {
+      case MODE_M15_H1:
+         modeName = "M15 (entrada) / H1 (tendência)";
+         break;
+      case MODE_H1_H4:
+         modeName = "H1 (entrada) / H4 (tendência)";
+         break;
+      case MODE_H4_D1:
+         modeName = "H4 (entrada) / D1 (tendência)";
+         break;
+      case MODE_MULTI_TF:
+         modeName = "Múltiplos Timeframes";
+         break;
+      default:
+         modeName = "DESCONHECIDO";
+   }
+   
+   return modeName;
+}
+
+void PrintStrategyInfo()
+{
+   if(!Show_Strategy_Info) return;
+   
+   Print("=================================================");
+   Print("INFORMAÇÕES DA ESTRATÉGIA");
+   Print("=================================================");
+   Print("Tipo Principal: ", GetStrategyName());
+   Print("Modo Timeframe: ", GetTimeframeModeName());
+   Print("-------------------------------------------------");
+   Print("Estratégias Ativas:");
+   Print("  • Trend: ", (Enable_Strategy_Trend ? "SIM" : "NÃO"));
+   Print("  • Grid: ", (Enable_Strategy_Grid ? "SIM" : "NÃO"));
+   Print("  • Scalper: ", (Enable_Strategy_Scalper ? "SIM" : "NÃO"));
+   Print("-------------------------------------------------");
+   Print("Configurações de Risco:");
+   Print("  • Lote Fixo: ", (Use_Fixed_Lot ? "SIM" : "NÃO"));
+   Print("  • Tamanho Lote: ", Fixed_Lot_Size);
+   Print("  • Trades Máximos: ", Max_Open_Trades);
+   Print("=================================================");
+}
+
+//+------------------------------------------------------------------+
+//| FUNÇÕES AUXILIARES DE DATA/TEMPO                               |
+//+------------------------------------------------------------------+
+datetime CreateDateTime(int year, int month, int day, int hour, int minute, int second)
+{
+   MqlDateTime dt;
+   dt.year = year;
+   dt.mon = month;
+   dt.day = day;
+   dt.hour = hour;
+   dt.min = minute;
+   dt.sec = second;
+   
+   return StructToTime(dt);
+}
+
+datetime GetTodayStartTime()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   dt.hour = 0;
+   dt.min = 0;
+   dt.sec = 0;
+   
+   return StructToTime(dt);
+}
+
+//+------------------------------------------------------------------+
+//| INICIALIZAÇÃO                                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("=================================================");
+   Print("FOREX FLEX EA - VERSÃO SEGURA 5.4");
+   Print("Sistema sem martingale - Seleção de Estratégia");
+   Print("=================================================");
+   
+   // Mostrar informações da estratégia
+   PrintStrategyInfo();
+   
+   // Verificar se pelo menos uma estratégia está ativa
+   if(!Enable_Strategy_Trend && !Enable_Strategy_Grid && !Enable_Strategy_Scalper)
+   {
+      Print("ERRO: Nenhuma estratégia está ativada!");
+      Print("Por favor, ative pelo menos uma estratégia nas configurações.");
+      return INIT_FAILED;
+   }
+   
+   // Inicializar variáveis
+   dailyTradesCount = 0;
+   dailyProfit = 0;
+   dailyLoss = 0;
+   lastTradeTime = 0;
+   initialDailyBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   highestBalance = initialDailyBalance;
+   fridayClosed = false;
+   lastFridayCloseTime = 0;
+   
+   // Configurar trade
+   trade.SetExpertMagicNumber(Magic_Number);
+   trade.SetDeviationInPoints(10);
+   trade.SetTypeFilling(ORDER_FILLING_FOK);
+   
+   // Verificar símbolo
+   if(!SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE))
+   {
+      Print("ERRO: Símbolo não disponível para trading");
+      return INIT_FAILED;
+   }
+   
+   // Verificar spread
+   long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(currentSpread > (long)(Max_Spread * 10))
+   {
+      Print("ALERTA: Spread atual (", currentSpread, ") maior que máximo permitido (", Max_Spread, ")");
+   }
+   
+   // Verificar margem disponível
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   Print("Saldo da conta: $", DoubleToString(balance, 2));
+   Print("Margem livre: $", DoubleToString(freeMargin, 2));
+   Print("Alavancagem: 1:", AccountInfoInteger(ACCOUNT_LEVERAGE));
+   
+   // Criar indicadores
+   handleATR = iATR(_Symbol, PERIOD_H1, 14);
+   handleADX = iADX(_Symbol, PERIOD_H1, Trend_ADX_Period);
+   handleEMA20 = iMA(_Symbol, PERIOD_H1, 20, 0, MODE_EMA, PRICE_CLOSE);
+   handleEMA50 = iMA(_Symbol, PERIOD_H1, 50, 0, MODE_EMA, PRICE_CLOSE);
+   handleBB = iBands(_Symbol, PERIOD_M5, 20, 0, Scalper_BB_Deviation, PRICE_CLOSE);
+   
+   EventSetTimer(5);
+   Print("EA Inicializado com Sucesso!");
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| ON DEINIT                                                       |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+   
+   // Liberar indicadores
+   if(handleATR != INVALID_HANDLE) IndicatorRelease(handleATR);
+   if(handleADX != INVALID_HANDLE) IndicatorRelease(handleADX);
+   if(handleEMA20 != INVALID_HANDLE) IndicatorRelease(handleEMA20);
+   if(handleEMA50 != INVALID_HANDLE) IndicatorRelease(handleEMA50);
+   if(handleBB != INVALID_HANDLE) IndicatorRelease(handleBB);
+   
+   Print("EA Finalizado. Motivo: ", reason);
+   Print("Saldo Final: $", DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2));
+}
+
+//+------------------------------------------------------------------+
+//| ON TIMER                                                        |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   CheckDailyReset();
+   UpdateMarketAnalysis();
+   CheckProtections();
+   ManageOpenPositions();
+   
+   // Verificar fechamento de sexta-feira apenas uma vez por hora
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   
+   if(Use_Friday_Close && dt.day_of_week == 5 && dt.min == 0)
+   {
+      CheckFridayClose();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ON TICK                                                         |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Atualizar contagem de posições abertas
+   openPositions = PositionsTotal();
+   
+   if(!CanTrade()) return;
+   if(IsDailyLimitReached()) return;
+   
+   switch(Strategy_Type)
+   {
+      case STRATEGY_TREND:
+         if(Enable_Strategy_Trend)
+         {
+            if(Enable_Debug) Print("Executando estratégia TREND...");
+            ExecuteTrendStrategy();
+         }
+         break;
+      case STRATEGY_GRID:
+         if(Enable_Strategy_Grid)
+         {
+            if(Enable_Debug) Print("Executando estratégia GRID...");
+            ExecuteGridStrategy();
+         }
+         break;
+      case STRATEGY_SCALPER:
+         if(Enable_Strategy_Scalper)
+         {
+            if(Enable_Debug) Print("Executando estratégia SCALPER...");
+            ExecuteScalperStrategy();
+         }
+         break;
+      case STRATEGY_HYBRID:
+         // Na estratégia híbrida, verifica cada sub-estratégia individualmente
+         ExecuteHybridStrategy();
+         break;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| VERIFICAR SE PODE OPERAR                                        |
+//+------------------------------------------------------------------+
+bool CanTrade()
+{
+   // Verificar horário de trading
+   if(Use_Time_Filter && !IsTradingTime()) 
+   {
+      if(Enable_Debug) Print("Fora do horário de trading");
+      return false;
+   }
+   
+   // Verificar se sexta-feira já fechou posições (evita reabertura)
+   if(Use_Friday_Close && fridayClosed)
+   {
+      if(Enable_Debug) Print("Posições já fechadas na sexta-feira");
+      return false;
+   }
+   
+   // Verificar spread
+   long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(spread > (long)(Max_Spread * 10))
+   {
+      if(Enable_Debug) Print("Spread muito alto: ", spread);
+      return false;
+   }
+   
+   // Verificar cooldown
+   if(TimeCurrent() - lastTradeTime < Trade_Cooldown)
+   {
+      if(Enable_Debug) Print("Em cooldown");
+      return false;
+   }
+   
+   // Verificar máximo de trades abertos
+   if(openPositions >= Max_Open_Trades)
+   {
+      if(Enable_Debug) Print("Máximo de trades abertos alcançado: ", openPositions);
+      return false;
+   }
+   
+   // Verificar margem disponível antes de abrir novo trade
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   double requiredMargin = CalculateRequiredMargin(CalculateLotSize(), ORDER_TYPE_BUY);
+   
+   if(freeMargin < requiredMargin * 1.5) // Deixar 50% de buffer
+   {
+      if(Enable_Debug) Print("Margem insuficiente. Livre: ", freeMargin, " Necessária: ", requiredMargin);
+      return false;
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| VERIFICAR FECHAMENTO SEXTA-FEIRA                               |
+//+------------------------------------------------------------------+
+void CheckFridayClose()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   
+   // Verificar se é sexta-feira e está na hora de fechar
+   if(dt.day_of_week == 5 && dt.hour >= Friday_Close_Hour && dt.min >= Friday_Close_Minute)
+   {
+      // Verificar se já fechou hoje
+      datetime currentTime = TimeCurrent();
+      datetime todayStart = GetTodayStartTime();
+      
+      if(lastFridayCloseTime < todayStart)
+      {
+         int totalPositions = PositionsTotal();
+         if(totalPositions > 0)
+         {
+            Print("Fechando todas as posições na sexta-feira às ", Friday_Close_Hour, ":", Friday_Close_Minute);
+            CloseAllPositions();
+            fridayClosed = true;
+            lastFridayCloseTime = currentTime;
+         }
+      }
+   }
+   else
+   {
+      // Resetar flag se não for mais sexta ou se for antes da hora de fechar
+      fridayClosed = false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ATUALIZAR ANÁLISE DO MERCADO                                    |
+//+------------------------------------------------------------------+
+void UpdateMarketAnalysis()
+{
+   // Calcular ATR
+   double atrBuffer[1];
+   if(handleATR != INVALID_HANDLE)
+   {
+      if(CopyBuffer(handleATR, 0, 0, 1, atrBuffer) == 1)
+      {
+         market.volatility = atrBuffer[0];
+      }
+   }
+   
+   // Calcular ADX
+   double adxBuffer[1];
+   if(handleADX != INVALID_HANDLE)
+   {
+      if(CopyBuffer(handleADX, 0, 0, 1, adxBuffer) == 1)
+      {
+         market.adxValue = adxBuffer[0];
+         market.isTrending = market.adxValue > Trend_ADX_Threshold;
+      }
+   }
+   
+   // Calcular EMAs
+   double emaFastBuffer[1], emaSlowBuffer[1];
+   if(handleEMA20 != INVALID_HANDLE && handleEMA50 != INVALID_HANDLE)
+   {
+      if(CopyBuffer(handleEMA20, 0, 0, 1, emaFastBuffer) == 1 &&
+         CopyBuffer(handleEMA50, 0, 0, 1, emaSlowBuffer) == 1)
+      {
+         market.emaFast = emaFastBuffer[0];
+         market.emaSlow = emaSlowBuffer[0];
+      }
+   }
+   
+   // Verificar ranging
+   MqlRates rates[];
+   if(CopyRates(_Symbol, PERIOD_H1, 0, 20, rates) >= 20)
+   {
+      double currentRange = rates[0].high - rates[0].low;
+      double avgRange = 0;
+      for(int i = 1; i < 10; i++)
+         avgRange += rates[i].high - rates[i].low;
+      avgRange /= 9.0;
+      
+      market.isRanging = (currentRange < avgRange * 0.7) && (market.adxValue < 25);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ESTRATÉGIA DE TENDÊNCIA                                         |
+//+------------------------------------------------------------------+
+void ExecuteTrendStrategy()
+{
+   if(!market.isTrending) return;
+   
+   ENUM_TIMEFRAMES entryTF, trendTF;
+   GetTimeframes(entryTF, trendTF);
+   
+   // Obter preço atual
+   MqlRates rates[];
+   if(CopyRates(_Symbol, entryTF, 0, 1, rates) < 1) return;
+   double price = rates[0].close;
+   
+   // Obter EMA de tendência
+   int trendEMAHandle = iMA(_Symbol, trendTF, Trend_EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
+   double trendEMABuffer[1];
+   if(CopyBuffer(trendEMAHandle, 0, 0, 1, trendEMABuffer) < 1) 
+   {
+      IndicatorRelease(trendEMAHandle);
+      return;
+   }
+   double trendEMA = trendEMABuffer[0];
+   IndicatorRelease(trendEMAHandle);
+   
+   // Obter EMAs rápidas
+   int fastEMAHandle = iMA(_Symbol, entryTF, 20, 0, MODE_EMA, PRICE_CLOSE);
+   int slowEMAHandle = iMA(_Symbol, entryTF, 50, 0, MODE_EMA, PRICE_CLOSE);
+   
+   double fastEMABuffer[1], slowEMABuffer[1];
+   if(CopyBuffer(fastEMAHandle, 0, 0, 1, fastEMABuffer) < 1 ||
+      CopyBuffer(slowEMAHandle, 0, 0, 1, slowEMABuffer) < 1)
+   {
+      IndicatorRelease(fastEMAHandle);
+      IndicatorRelease(slowEMAHandle);
+      return;
+   }
+   
+   double fastEMA = fastEMABuffer[0];
+   double slowEMA = slowEMABuffer[0];
+   
+   IndicatorRelease(fastEMAHandle);
+   IndicatorRelease(slowEMAHandle);
+   
+   // Obter ATR
+   int atrHandle = iATR(_Symbol, entryTF, 14);
+   double atrBuffer[1];
+   double atr = 0;
+   if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) == 1)
+   {
+      atr = atrBuffer[0];
+   }
+   IndicatorRelease(atrHandle);
+   
+   // Sinal de compra
+   if(price > trendEMA && fastEMA > slowEMA)
+   {
+      double lot = CalculateLotSize();
+      double sl = price - (atr * Trend_SL_Factor);
+      double tp = price + (atr * Trend_TP_Factor);
+      
+      if(OpenTrade(ORDER_TYPE_BUY, lot, sl, tp, "TREND Buy"))
+         lastTradeTime = TimeCurrent();
+   }
+   // Sinal de venda
+   else if(price < trendEMA && fastEMA < slowEMA)
+   {
+      double lot = CalculateLotSize();
+      double sl = price + (atr * Trend_SL_Factor);
+      double tp = price - (atr * Trend_TP_Factor);
+      
+      if(OpenTrade(ORDER_TYPE_SELL, lot, sl, tp, "TREND Sell"))
+         lastTradeTime = TimeCurrent();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ESTRATÉGIA DE GRID                                              |
+//+------------------------------------------------------------------+
+void ExecuteGridStrategy()
+{
+   if(GetGridDrawdown() > Grid_Max_Drawdown)
+   {
+      if(Enable_Debug) Print("Drawdown do grid muito alto: ", GetGridDrawdown());
+      return;
+   }
+   
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   
+   int buyLevels = CountGridLevels(ORDER_TYPE_BUY);
+   int sellLevels = CountGridLevels(ORDER_TYPE_SELL);
+   
+   // Adicionar nível de compra
+   if(buyLevels < Grid_Levels)
+   {
+      double lastBuyPrice = GetLastGridPrice(ORDER_TYPE_BUY);
+      double gridDistance = Grid_Spacing * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      
+      if(lastBuyPrice == 0 || bid <= (lastBuyPrice - gridDistance))
+      {
+         double lot = CalculateGridLotSize(buyLevels + 1);
+         if(OpenGridTrade(ORDER_TYPE_BUY, lot, buyLevels + 1))
+            lastTradeTime = TimeCurrent();
+      }
+   }
+   
+   // Adicionar nível de venda
+   if(sellLevels < Grid_Levels)
+   {
+      double lastSellPrice = GetLastGridPrice(ORDER_TYPE_SELL);
+      double gridDistance = Grid_Spacing * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      
+      if(lastSellPrice == 0 || ask >= (lastSellPrice + gridDistance))
+      {
+         double lot = CalculateGridLotSize(sellLevels + 1);
+         if(OpenGridTrade(ORDER_TYPE_SELL, lot, sellLevels + 1))
+            lastTradeTime = TimeCurrent();
+      }
+   }
+   
+   CheckGridTakeProfits();
+}
+
+//+------------------------------------------------------------------+
+//| ESTRATÉGIA SCALPER                                              |
+//+------------------------------------------------------------------+
+void ExecuteScalperStrategy()
+{
+   if(market.adxValue < Scalper_Min_ADX) return;
+   
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   
+   if(Scalper_Use_Bollinger && handleBB != INVALID_HANDLE)
+   {
+      double bbUpperBuffer[1], bbLowerBuffer[1];
+      
+      if(CopyBuffer(handleBB, 1, 0, 1, bbUpperBuffer) == 1 &&
+         CopyBuffer(handleBB, 2, 0, 1, bbLowerBuffer) == 1)
+      {
+         double bbUpper = bbUpperBuffer[0];
+         double bbLower = bbLowerBuffer[0];
+         
+         // Sinal de compra
+         if(bid <= bbLower && market.emaFast > market.emaSlow)
+         {
+            double lot = CalculateLotSize();
+            double sl = bid - (Scalper_SL_Pips * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+            double tp = bid + (Scalper_TP_Pips * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+            
+            if(OpenTrade(ORDER_TYPE_BUY, lot, sl, tp, "SCALPER Buy"))
+               lastTradeTime = TimeCurrent();
+         }
+         // Sinal de venda
+         else if(ask >= bbUpper && market.emaFast < market.emaSlow)
+         {
+            double lot = CalculateLotSize();
+            double sl = ask + (Scalper_SL_Pips * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+            double tp = ask - (Scalper_TP_Pips * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+            
+            if(OpenTrade(ORDER_TYPE_SELL, lot, sl, tp, "SCALPER Sell"))
+               lastTradeTime = TimeCurrent();
+         }
+      }
+   }
+   else
+   {
+      // Scalping baseado em EMA
+      int fastEMAHandle = iMA(_Symbol, PERIOD_M5, 9, 0, MODE_EMA, PRICE_CLOSE);
+      int slowEMAHandle = iMA(_Symbol, PERIOD_M5, 21, 0, MODE_EMA, PRICE_CLOSE);
+      
+      double fastEMABuffer[1], slowEMABuffer[1];
+      if(CopyBuffer(fastEMAHandle, 0, 0, 1, fastEMABuffer) == 1 &&
+         CopyBuffer(slowEMAHandle, 0, 0, 1, slowEMABuffer) == 1)
+      {
+         double fastEMA = fastEMABuffer[0];
+         double slowEMA = slowEMABuffer[0];
+         
+         if(fastEMA > slowEMA && bid > fastEMA)
+         {
+            double lot = CalculateLotSize();
+            double sl = bid - (Scalper_SL_Pips * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+            double tp = bid + (Scalper_TP_Pips * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+            
+            if(OpenTrade(ORDER_TYPE_BUY, lot, sl, tp, "SCALPER EMA Buy"))
+               lastTradeTime = TimeCurrent();
+         }
+         else if(fastEMA < slowEMA && ask < fastEMA)
+         {
+            double lot = CalculateLotSize();
+            double sl = ask + (Scalper_SL_Pips * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+            double tp = ask - (Scalper_TP_Pips * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+            
+            if(OpenTrade(ORDER_TYPE_SELL, lot, sl, tp, "SCALPER EMA Sell"))
+               lastTradeTime = TimeCurrent();
+         }
+      }
+      IndicatorRelease(fastEMAHandle);
+      IndicatorRelease(slowEMAHandle);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ESTRATÉGIA HÍBRIDA                                              |
+//+------------------------------------------------------------------+
+void ExecuteHybridStrategy()
+{
+   // Na estratégia híbrida, verifica cada sub-estratégia baseado nas condições
+   
+   if(Enable_Strategy_Trend && market.isTrending && market.adxValue > 30)
+   {
+      if(Enable_Debug) Print("Hybrid: Executando TREND (mercado trending)");
+      ExecuteTrendStrategy();
+   }
+   else if(Enable_Strategy_Grid && (market.isRanging || market.adxValue < 20))
+   {
+      if(Enable_Debug) Print("Hybrid: Executando GRID (mercado ranging)");
+      ExecuteGridStrategy();
+   }
+   else if(Enable_Strategy_Scalper && market.volatility < 0.5)
+   {
+      if(Enable_Debug) Print("Hybrid: Executando SCALPER (baixa volatilidade)");
+      ExecuteScalperStrategy();
+   }
+   else if(Enable_Strategy_Trend)
+   {
+      if(Enable_Debug) Print("Hybrid: Executando TREND (condição padrão)");
+      ExecuteTrendStrategy();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CALCULAR TAMANHO DO LOTE                                        |
+//+------------------------------------------------------------------+
+double CalculateLotSize()
+{
+   // Usar lote fixo por padrão (configuração mais segura)
+   if(Use_Fixed_Lot)
+   {
+      double lot = Fixed_Lot_Size;
+      
+      // Verificar limites do símbolo
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+      double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      
+      // Aplicar limites
+      lot = MathMax(lot, minLot);
+      lot = MathMin(lot, maxLot);
+      
+      // Arredondar para o step
+      if(lotStep > 0)
+         lot = MathRound(lot / lotStep) * lotStep;
+      
+      if(Enable_Debug) Print("Lote fixo: ", lot);
+      return NormalizeDouble(lot, 2);
+   }
+   
+   // Usar lote dinâmico (1% do patrimônio)
+   if(Use_Dynamic_Lot)
+   {
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      
+      // Usar o menor valor
+      double accountValue = MathMin(equity, balance);
+      
+      // 1% do valor da conta
+      double riskAmount = accountValue * 0.01;
+      
+      // Limitar risco máximo
+      riskAmount = MathMin(riskAmount, accountValue * (Max_Risk_Percent / 100.0));
+      
+      // Para conta de 100.000, 1% = 1.000 - mas limitaremos
+      if(riskAmount > 500) riskAmount = 500; // Máximo $500
+      
+      // Calcular lote baseado no SL esperado
+      double slPoints = 0;
+      
+      switch(Strategy_Type)
+      {
+         case STRATEGY_TREND:
+            slPoints = GetATR(PERIOD_H1) * Trend_SL_Factor / SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            break;
+         case STRATEGY_SCALPER:
+            slPoints = Scalper_SL_Pips * 10;
+            break;
+         default:
+            slPoints = 100; // 10 pips padrão
+      }
+      
+      // Garantir SL mínimo
+      slPoints = MathMax(slPoints, 50); // Mínimo 5 pips
+      
+      // Calcular lote: (Risco em $) / (SL em pontos × Valor do ponto)
+      double pointValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double lot = 0;
+      
+      if(slPoints > 0 && pointValue > 0)
+      {
+         // Fórmula simplificada para Forex
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         lot = riskAmount / (slPoints * SymbolInfoDouble(_Symbol, SYMBOL_POINT) * pointValue * tickSize);
+      }
+      
+      // Verificar limites
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+      double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      
+      lot = MathMax(lot, minLot);
+      lot = MathMin(lot, maxLot);
+      
+      if(lotStep > 0)
+         lot = MathRound(lot / lotStep) * lotStep;
+      
+      lot = NormalizeDouble(lot, 2);
+      
+      // Garantir que não seja muito grande
+      if(lot > 10.0) lot = 10.0;
+      
+      if(Enable_Debug) 
+         Print("Lote dinâmico: ", lot, " (Risk: $", riskAmount, ", SL points: ", slPoints, ")");
+      
+      return lot;
+   }
+   
+   // Default: lote fixo
+   return Fixed_Lot_Size;
+}
+
+//+------------------------------------------------------------------+
+//| OBTER ATR                                                       |
+//+------------------------------------------------------------------+
+double GetATR(ENUM_TIMEFRAMES timeframe = PERIOD_H1)
+{
+   double atrBuffer[1];
+   if(handleATR != INVALID_HANDLE && timeframe == PERIOD_H1)
+   {
+      if(CopyBuffer(handleATR, 0, 0, 1, atrBuffer) == 1)
+         return atrBuffer[0];
+   }
+   else
+   {
+      int tempHandle = iATR(_Symbol, timeframe, 14);
+      if(CopyBuffer(tempHandle, 0, 0, 1, atrBuffer) == 1)
+      {
+         double atr = atrBuffer[0];
+         IndicatorRelease(tempHandle);
+         return atr;
+      }
+      IndicatorRelease(tempHandle);
+   }
+   return 0.0010;
+}
+
+//+------------------------------------------------------------------+
+//| CALCULAR LOTE DO GRID                                           |
+//+------------------------------------------------------------------+
+double CalculateGridLotSize(int level)
+{
+   // SEM MARTINGALE - mesmo tamanho para todos os níveis
+   return CalculateLotSize();
+}
+
+//+------------------------------------------------------------------+
+//| CALCULAR MARGEM NECESSÁRIA                                      |
+//+------------------------------------------------------------------+
+double CalculateRequiredMargin(double lot, ENUM_ORDER_TYPE type)
+{
+   double price = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : 
+                                            SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
+   long leverage = AccountInfoInteger(ACCOUNT_LEVERAGE);
+   double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   
+   // Cálculo básico de margem
+   double margin = (lot * contractSize * price) / leverage;
+   
+   if(Enable_Debug) Print("Margem necessária para ", lot, " lotes: $", DoubleToString(margin, 2));
+   
+   return margin;
+}
+
+//+------------------------------------------------------------------+
+//| VERIFICAR MARGEM SUFICIENTE                                     |
+//+------------------------------------------------------------------+
+bool CheckMarginAvailable(double lot, ENUM_ORDER_TYPE type)
+{
+   double requiredMargin = CalculateRequiredMargin(lot, type);
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   
+   // Deixar 30% de margem livre como buffer
+   if(freeMargin < requiredMargin * 1.3)
+   {
+      Print("ALERTA: Margem insuficiente!");
+      Print("  Margem necessária: $", DoubleToString(requiredMargin, 2));
+      Print("  Margem livre: $", DoubleToString(freeMargin, 2));
+      Print("  Lote: ", lot);
+      return false;
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| ABRIR TRADE                                                     |
+//+------------------------------------------------------------------+
+bool OpenTrade(ENUM_ORDER_TYPE type, double lot, double sl, double tp, string comment)
+{
+   if(lot <= 0)
+   {
+      Print("ERRO: Tamanho do lote inválido: ", lot);
+      return false;
+   }
+   
+   // Verificar margem antes de abrir
+   if(!CheckMarginAvailable(lot, type))
+   {
+      Print("Trade cancelado: margem insuficiente para lote ", lot);
+      return false;
+   }
+   
+   double price = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : 
+                                            SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
+   // Verificar stops mínimos
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist = stopsLevel * point;
+   
+   if(sl > 0)
+   {
+      double slDistance = MathAbs(price - sl);
+      if(slDistance < minDist)
+      {
+         Print("SL muito próximo. Ajustando...");
+         if(type == ORDER_TYPE_BUY)
+            sl = price - minDist;
+         else
+            sl = price + minDist;
+      }
+   }
+   
+   if(tp > 0)
+   {
+      double tpDistance = MathAbs(price - tp);
+      if(tpDistance < minDist)
+      {
+         Print("TP muito próximo. Ajustando...");
+         if(type == ORDER_TYPE_BUY)
+            tp = price + minDist;
+         else
+            tp = price - minDist;
+      }
+   }
+   
+   trade.SetExpertMagicNumber(Magic_Number);
+   
+   bool result = false;
+   if(type == ORDER_TYPE_BUY)
+   {
+      result = trade.Buy(lot, _Symbol, price, sl, tp, comment);
+   }
+   else
+   {
+      result = trade.Sell(lot, _Symbol, price, sl, tp, comment);
+   }
+   
+   if(result)
+   {
+      dailyTradesCount++;
+      Print("Trade aberto: ", (type == ORDER_TYPE_BUY ? "COMPRA" : "VENDA"), 
+            " - Estratégia: ", comment, " - Lote: ", lot, " - Preço: ", DoubleToString(price, 5));
+      return true;
+   }
+   else
+   {
+      int error = GetLastError();
+      Print("ERRO ao abrir trade (", error, "): ", comment);
+      return false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ABRIR TRADE DE GRID                                             |
+//+------------------------------------------------------------------+
+bool OpenGridTrade(ENUM_ORDER_TYPE type, double lot, int level)
+{
+   double price = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : 
+                                            SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
+   string comment = "GRID " + (type == ORDER_TYPE_BUY ? "Buy" : "Sell") + " L" + IntegerToString(level);
+   
+   double sl = 0; // Grid não usa SL inicial
+   double tp = 0;
+   
+   if(Grid_TP_Profit > 0)
+   {
+      if(type == ORDER_TYPE_BUY)
+         tp = price + (Grid_TP_Profit * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+      else
+         tp = price - (Grid_TP_Profit * 10 * SymbolInfoDouble(_Symbol, SYMBOL_POINT));
+   }
+   
+   return OpenTrade(type, lot, sl, tp, comment);
+}
+
+//+------------------------------------------------------------------+
+//| GERENCIAR POSIÇÕES ABERTAS                                      |
+//+------------------------------------------------------------------+
+void ManageOpenPositions()
+{
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      
+      double profit = PositionGetDouble(POSITION_PROFIT);
+      double priceOpen = PositionGetDouble(POSITION_PRICE_OPEN);
+      double priceCurrent = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 
+                           SymbolInfoDouble(_Symbol, SYMBOL_BID) : 
+                           SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double sl = PositionGetDouble(POSITION_SL);
+      ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      
+      // Trailing Stop
+      if(Use_Trailing_Stop)
+         ApplyTrailingStop(ticket, type, priceOpen, priceCurrent, sl);
+      
+      // Break Even
+      if(Use_Break_Even)
+         ApplyBreakEven(ticket, type, priceOpen, priceCurrent, sl);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| APLICAR TRAILING STOP                                           |
+//+------------------------------------------------------------------+
+void ApplyTrailingStop(ulong ticket, ENUM_POSITION_TYPE type, double openPrice, double currentPrice, double currentSL)
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double trailingStart = Trailing_Start * 10 * point;
+   double trailingStep = Trailing_Step * 10 * point;
+   
+   if(type == POSITION_TYPE_BUY)
+   {
+      double profit = currentPrice - openPrice;
+      if(profit >= trailingStart)
+      {
+         double newSL = openPrice + trailingStep;
+         if(newSL > currentSL && (currentPrice - newSL) > (10 * point))
+         {
+            trade.PositionModify(ticket, newSL, 0);
+         }
+      }
+   }
+   else if(type == POSITION_TYPE_SELL)
+   {
+      double profit = openPrice - currentPrice;
+      if(profit >= trailingStart)
+      {
+         double newSL = openPrice - trailingStep;
+         if(newSL < currentSL && (newSL - currentPrice) > (10 * point))
+         {
+            trade.PositionModify(ticket, newSL, 0);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| APLICAR BREAK EVEN                                              |
+//+------------------------------------------------------------------+
+void ApplyBreakEven(ulong ticket, ENUM_POSITION_TYPE type, double openPrice, double currentPrice, double currentSL)
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double breakEvenLevel = Break_Even_At * 10 * point;
+   
+   if(type == POSITION_TYPE_BUY && currentPrice >= openPrice + breakEvenLevel)
+   {
+      if(currentSL < openPrice || currentSL == 0)
+      {
+         trade.PositionModify(ticket, openPrice, 0);
+      }
+   }
+   else if(type == POSITION_TYPE_SELL && currentPrice <= openPrice - breakEvenLevel)
+   {
+      if(currentSL > openPrice || currentSL == 0)
+      {
+         trade.PositionModify(ticket, openPrice, 0);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| FUNÇÕES AUXILIARES DO GRID                                      |
+//+------------------------------------------------------------------+
+int CountGridLevels(ENUM_ORDER_TYPE type)
+{
+   int count = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "GRID") >= 0)
+      {
+         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         if((type == ORDER_TYPE_BUY && posType == POSITION_TYPE_BUY) ||
+            (type == ORDER_TYPE_SELL && posType == POSITION_TYPE_SELL))
+         {
+            count++;
+         }
+      }
+   }
+   return count;
+}
+
+double GetLastGridPrice(ENUM_ORDER_TYPE type)
+{
+   double lastPrice = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "GRID") >= 0)
+      {
+         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         if((type == ORDER_TYPE_BUY && posType == POSITION_TYPE_BUY) ||
+            (type == ORDER_TYPE_SELL && posType == POSITION_TYPE_SELL))
+         {
+            double price = PositionGetDouble(POSITION_PRICE_OPEN);
+            if(lastPrice == 0 || 
+               (type == ORDER_TYPE_BUY && price > lastPrice) || 
+               (type == ORDER_TYPE_SELL && price < lastPrice))
+            {
+               lastPrice = price;
+            }
+         }
+      }
+   }
+   return lastPrice;
+}
+
+double GetGridDrawdown()
+{
+   double gridProfit = 0;
+   double gridInvestment = 0;
+   
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "GRID") >= 0)
+      {
+         gridProfit += PositionGetDouble(POSITION_PROFIT);
+         double volume = PositionGetDouble(POSITION_VOLUME);
+         double price = PositionGetDouble(POSITION_PRICE_OPEN);
+         gridInvestment += volume * price;
+      }
+   }
+   
+   if(gridInvestment > 0)
+      return MathAbs(gridProfit / gridInvestment * 100);
+   
+   return 0;
+}
+
+bool IsGridProfitable()
+{
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "GRID") >= 0)
+      {
+         if(PositionGetDouble(POSITION_PROFIT) <= 0)
+            return false;
+      }
+   }
+   return true;
+}
+
+void CheckGridTakeProfits()
+{
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "GRID") >= 0 && Grid_Use_TP_All)
+      {
+         double profit = PositionGetDouble(POSITION_PROFIT);
+         if(profit > 0)
+         {
+            CloseAllGridPositions();
+            Print("Grid fechado com lucro total!");
+            break;
+         }
+      }
+   }
+}
+
+void CloseAllGridPositions()
+{
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != Magic_Number) continue;
+      
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "GRID") >= 0)
+      {
+         trade.PositionClose(ticket);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| VERIFICAÇÕES DE PROTEÇÃO                                        |
+//+------------------------------------------------------------------+
+void CheckDailyReset()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   
+   if(dt.hour == 0 && dt.min == 0 && dt.sec < 10)
+   {
+      datetime today = iTime(_Symbol, PERIOD_D1, 0);
+      if(lastDailyReset != today)
+      {
+         dailyTradesCount = 0;
+         dailyProfit = 0;
+         dailyLoss = 0;
+         initialDailyBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+         lastDailyReset = today;
+         // Resetar flag de sexta-feira
+         fridayClosed = false;
+         Print("Reset diário realizado.");
+      }
+   }
+}
+
+bool IsDailyLimitReached()
+{
+   if(!Enable_Daily_Stop) return false;
+   
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double dailyNet = currentEquity - initialDailyBalance;
+   double dailyPercent = (initialDailyBalance > 0) ? (dailyNet / initialDailyBalance) * 100 : 0;
+   
+   if(dailyPercent >= Daily_Profit_Target)
+   {
+      Print("Meta diária atingida: ", DoubleToString(dailyPercent, 2), "%");
+      CloseAllPositions();
+      return true;
+   }
+   
+   if(dailyPercent <= -Daily_Loss_Limit)
+   {
+      Print("Limite de perda diária atingido: ", DoubleToString(dailyPercent, 2), "%");
+      CloseAllPositions();
+      return true;
+   }
+   
+   return false;
+}
+
+void CheckProtections()
+{
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   
+   if(highestBalance > 0)
+   {
+      double drawdownPercent = ((highestBalance - equity) / highestBalance) * 100;
+      if(drawdownPercent > 25.0)
+      {
+         Print("!!! DRAWDOWN CRÍTICO ATINGIDO: ", DoubleToString(drawdownPercent, 2), "% !!!");
+         CloseAllPositions();
+         ExpertRemove();
+      }
+   }
+   
+   if(equity > highestBalance)
+      highestBalance = equity;
+}
+
+//+------------------------------------------------------------------+
+//| FUNÇÕES DE TEMPO                                                |
+//+------------------------------------------------------------------+
+bool IsTradingTime()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   
+   int currentMinutes = dt.hour * 60 + dt.min;
+   int startMinutes = TimeStringToMinutes(Trading_Start_Time);
+   int endMinutes = TimeStringToMinutes(Trading_End_Time);
+   
+   return (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
+}
+
+int TimeStringToMinutes(string timeStr)
+{
+   string parts[];
+   if(StringSplit(timeStr, ':', parts) >= 2)
+   {
+      return (int)StringToInteger(parts[0]) * 60 + (int)StringToInteger(parts[1]);
+   }
+   return 0;
+}
+
+void GetTimeframes(ENUM_TIMEFRAMES &entry, ENUM_TIMEFRAMES &trend)
+{
+   switch(Timeframe_Mode)
+   {
+      case MODE_M15_H1:
+         entry = PERIOD_M15;
+         trend = PERIOD_H1;
+         break;
+      case MODE_H1_H4:
+         entry = PERIOD_H1;
+         trend = PERIOD_H4;
+         break;
+      case MODE_H4_D1:
+         entry = PERIOD_H4;
+         trend = PERIOD_D1;
+         break;
+      default:
+         entry = PERIOD_H1;
+         trend = PERIOD_H4;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| FECHAR TODAS AS POSIÇÕES                                       |
+//+------------------------------------------------------------------+
+void CloseAllPositions()
+{
+   int count = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol && 
+         PositionGetInteger(POSITION_MAGIC) == Magic_Number)
+      {
+         trade.PositionClose(ticket);
+         count++;
+      }
+   }
+   
+   if(count > 0)
+   {
+      Print("Fechadas ", count, " posições.");
+   }
+}
+//+------------------------------------------------------------------+
