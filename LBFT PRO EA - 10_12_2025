@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                         HIGH PROFIT EA M15 EURUSD v3.3                      |
-//|                 Estratégia Otimizada com Gestão de Risco         |
+//|                 Estratégia Otimizada com Gestão de Risco M15 EURUSD       |
 //+------------------------------------------------------------------+
 #property copyright "High Profit EA v3.3"
 #property version   "3.3"
@@ -12,9 +12,9 @@
 //+------------------------------------------------------------------+
 input group "=== CONFIGURAÇÃO PRINCIPAL ==="
 input int      MagicNumber = 777888;           // Número Mágico
-input double   LotSize = 0.1;                  // Tamanho do Lote Fixo
-input bool     UseDynamicLot = false;          // Usar Lote Dinâmico (% do saldo)
-input double   RiskPercent = 2.0;              // Risco por Trade (% do saldo)
+input double   LotSize = 0.5;                  // Tamanho do Lote Fixo
+input bool     UseDynamicLot = true;          // Usar Lote Dinâmico (% do saldo)
+input double   RiskPercent = 0.5;              // Risco por Trade (% do saldo)
 input double   MaxSpread = 15.0;               // Spread Máximo (pontos)
 
 input group "=== LIMITES DIÁRIOS ==="
