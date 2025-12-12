@@ -15,7 +15,7 @@ input int      MagicNumber = 777888;           // Número Mágico
 input double   LotSize = 0.5;                  // Tamanho do Lote Fixo
 input bool     UseDynamicLot = true;          // Usar Lote Dinâmico (% do saldo)
 input double   RiskPercent = 0.5;              // Risco por Trade (% do saldo)
-input double   MaxSpread = 15.0;               // Spread Máximo (pontos)
+input double   MaxSpread = 10.0;               // Spread Máximo (pontos)
 
 input group "=== LIMITES DIÁRIOS ==="
 input bool     UseDailyLimit = false;          // Usar Limite Diário (DESATIVADO para teste)
@@ -30,11 +30,11 @@ input int      MinMinutesBetweenTrades = 15;    // Minutos entre Trades (reduzid
 input group "=== FILTROS DE ENTRADA ==="
 input bool     UseRSI = true;                  // Usar RSI
 input int      RSIPeriod = 14;                 // Período do RSI
-input double   RSIOverbought = 65.0;           // Nível Overbought (ajustado)
-input double   RSIOversold = 35.0;             // Nível Oversold (ajustado)
+input double   RSIOverbought = 68.0;           // Nível Overbought (ajustado)
+input double   RSIOversold = 33.0;             // Nível Oversold (ajustado)
 
 input bool     UseEMA = true;                  // Usar EMA para tendência
-input int      EMAFastPeriod = 9;              // EMA Rápida
+input int      EMAFastPeriod = 16;              // EMA Rápida
 input int      EMASlowPeriod = 200;             // EMA Lenta
 
 input bool     UseMACD = false;                // Usar confirmação MACD (DESATIVADO)
@@ -63,8 +63,8 @@ input ENUM_RISK_MODE RiskMode = MODE_FIXED;    // Modo de Cálculo do SL (FIXADO
 input double   StopLossATR = 1.5;              // Stop Loss (x ATR)
 input double   TakeProfitATR = 2.5;            // Take Profit (x ATR)
 input double   FixedStopLoss = 100.0;          // Stop Loss Fixo (pontos) - aumentado
-input double   FixedTakeProfit = 150.0;        // Take Profit Fixo (pontos) - aumentado
-input double   RiskRewardRatio = 1.5;          // Ratio Risco/Retorno
+input double   FixedTakeProfit = 200.0;        // Take Profit Fixo (pontos) - aumentado
+input double   RiskRewardRatio = 2.5;          // Ratio Risco/Retorno
 
 input group "=== SAÍDA AVANÇADA ==="
 input bool     UseTrailingStop = false;        // Usar Trailing Stop (DESATIVADO para teste)
