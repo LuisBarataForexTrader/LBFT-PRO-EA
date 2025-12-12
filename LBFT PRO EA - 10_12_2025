@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                         HIGH PROFIT EA M15 EURUSD v3.3                      |
-//|                 Estratégia Otimizada com Gestão de Risco M15 EURUSD       |
+//|                 Estratégia Otimizada com Gestão de Risco         |
 //+------------------------------------------------------------------+
 #property copyright "High Profit EA v3.3"
 #property version   "3.3"
@@ -19,10 +19,10 @@ input double   MaxSpread = 15.0;               // Spread Máximo (pontos)
 
 input group "=== LIMITES DIÁRIOS ==="
 input bool     UseDailyLimit = false;          // Usar Limite Diário (DESATIVADO para teste)
-input double   DailyProfitTarget = 5.0;        // Meta de Lucro Diário (%)
-input double   DailyLossLimit = 3.0;           // Limite de Perda Diário (%)
+input double   DailyProfitTarget = 8.0;        // Meta de Lucro Diário (%)
+input double   DailyLossLimit = 2.0;           // Limite de Perda Diário (%)
 input int      MaxTradesPerDay = 100;          // Máximo de Trades por Dia (aumentado para teste)
-input int      MinMinutesBetweenTrades = 1;    // Minutos entre Trades (reduzido para teste)
+input int      MinMinutesBetweenTrades = 15;    // Minutos entre Trades (reduzido para teste)
 
 //+------------------------------------------------------------------+
 //| ESTRATÉGIA DE ENTRADA                                           |
@@ -34,7 +34,7 @@ input double   RSIOverbought = 65.0;           // Nível Overbought (ajustado)
 input double   RSIOversold = 35.0;             // Nível Oversold (ajustado)
 
 input bool     UseEMA = true;                  // Usar EMA para tendência
-input int      EMAFastPeriod = 50;              // EMA Rápida
+input int      EMAFastPeriod = 9;              // EMA Rápida
 input int      EMASlowPeriod = 200;             // EMA Lenta
 
 input bool     UseMACD = false;                // Usar confirmação MACD (DESATIVADO)
