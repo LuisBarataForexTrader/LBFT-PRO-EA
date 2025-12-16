@@ -1,0 +1,626 @@
+//+------------------------------------------------------------------+
+//|                 FUNDEDNEXT EA - 2024 FINAL CLEAN               |
+//|        Versão limpa e funcional sem erros de compilação        |
+//+------------------------------------------------------------------+
+#property copyright "FundedNext 2024"
+#property version   "16.0"
+#property description "Versão limpa e funcional"
+#property strict
+
+#include <Trade\Trade.mqh>
+CTrade trade;
+
+//+------------------------------------------------------------------+
+//| CONFIGURAÇÃO PRINCIPAL                                          |
+//+------------------------------------------------------------------+
+input group "=== CONFIGURAÇÃO PRINCIPAL ==="
+input int      MagicNumber = 777888;
+input double   LotSize = 0.5;
+input bool     UseDynamicLot = true;
+input double   RiskPercent = 0.8;
+input double   MaxSpread = 10.0;
+input int      MaxTradesPerDay = 8;
+
+//+------------------------------------------------------------------+
+//| ESTRATÉGIA                                                      |
+//+------------------------------------------------------------------+
+input group "=== ESTRATÉGIA ==="
+input int      RSIPeriod = 12;
+input double   RSIOverbought = 70.0;
+input double   RSIOversold = 30.0;
+input int      EMAFastPeriod = 14;
+input int      EMASlowPeriod = 180;
+
+//+------------------------------------------------------------------+
+//| AJUSTES 2024                                                    |
+//+------------------------------------------------------------------+
+input group "=== AJUSTES 2024 ==="
+input bool     Enable2024Mode = true;
+input double   LotMultiplier2024 = 0.8;
+input double   SLMultiplier2024 = 0.75;
+input double   TPMultiplier2024 = 0.7;
+
+//+------------------------------------------------------------------+
+//| GERENCIAMENTO                                                   |
+//+------------------------------------------------------------------+
+input group "=== GERENCIAMENTO ==="
+input bool     UsePartialClose = true;
+input double   Close1atRR = 1.0;
+input double   Close2atRR = 1.5;
+input double   Close3atRR = 2.0;
+input bool     UseTrailingStop = true;
+input double   TrailingStep = 0.5;
+input bool     UseBreakeven = true;
+input double   BreakevenAtRR = 0.8;
+
+//+------------------------------------------------------------------+
+//| FILTROS                                                         |
+//+------------------------------------------------------------------+
+input group "=== FILTROS ==="
+input bool     UseVolatilityFilter = true;
+input double   MinVolatilityATR = 0.00015;
+input double   MaxVolatilityATR = 0.00040;
+input bool     UseTimeFilter = true;
+input string   BestHoursStart = "02:00";
+input string   BestHoursEnd = "11:00";
+
+//+------------------------------------------------------------------+
+//| VARIÁVEIS GLOBAIS                                               |
+//+------------------------------------------------------------------+
+int handleRSI, handleEMAFast, handleEMASlow, handleATR;
+datetime lastTradeTime;
+int tradesToday;
+datetime lastDayChecked;
+double dailyEquityHigh;
+double totalProfitToday;
+
+//+------------------------------------------------------------------+
+//| INICIALIZAÇÃO                                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   Print("=== FUNDEDNEXT EA 2024 ===");
+   Print("Versão limpa e funcional");
+   
+   handleRSI = iRSI(_Symbol, _Period, RSIPeriod, PRICE_CLOSE);
+   handleEMAFast = iMA(_Symbol, _Period, EMAFastPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   handleEMASlow = iMA(_Symbol, _Period, EMASlowPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   handleATR = iATR(_Symbol, _Period, 14);
+   
+   if(handleRSI == INVALID_HANDLE || handleEMAFast == INVALID_HANDLE || 
+      handleEMASlow == INVALID_HANDLE)
+   {
+      Print("Erro ao criar indicadores!");
+      return INIT_FAILED;
+   }
+   
+   lastTradeTime = 0;
+   tradesToday = 0;
+   lastDayChecked = 0;
+   dailyEquityHigh = AccountInfoDouble(ACCOUNT_EQUITY);
+   totalProfitToday = 0;
+   
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| VERIFICAR VOLATILIDADE                                          |
+//+------------------------------------------------------------------+
+bool CheckVolatility()
+{
+   if(!UseVolatilityFilter) return true;
+   
+   double atrValue[1];
+   if(CopyBuffer(handleATR, 0, 0, 1, atrValue) == 1)
+   {
+      double currentATR = atrValue[0];
+      
+      if(currentATR < MinVolatilityATR)
+      {
+         Print("Volatilidade muito baixa: ", currentATR);
+         return false;
+      }
+      
+      if(currentATR > MaxVolatilityATR)
+      {
+         Print("Volatilidade muito alta: ", currentATR);
+         return false;
+      }
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| VERIFICAR HORÁRIO                                               |
+//+------------------------------------------------------------------+
+bool CheckTradingTime()
+{
+   if(!UseTimeFilter) return true;
+   
+   datetime current = TimeCurrent();
+   MqlDateTime currTime;
+   TimeToStruct(current, currTime);
+   
+   MqlDateTime startTime, endTime;
+   TimeToStruct(StringToTime(BestHoursStart), startTime);
+   TimeToStruct(StringToTime(BestHoursEnd), endTime);
+   
+   int currentMinutes = currTime.hour * 60 + currTime.min;
+   int startMinutes = startTime.hour * 60 + startTime.min;
+   int endMinutes = endTime.hour * 60 + endTime.min;
+   
+   return (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
+}
+
+//+------------------------------------------------------------------+
+//| VERIFICAR POSIÇÃO ABERTA                                        |
+//+------------------------------------------------------------------+
+bool HasOpenPosition()
+{
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         if(PositionSelectByTicket(ticket))
+         {
+            if(PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| RESETAR ESTATÍSTICAS DIÁRIAS                                   |
+//+------------------------------------------------------------------+
+void ResetDailyStats()
+{
+   datetime currentTime = TimeCurrent();
+   MqlDateTime dt;
+   TimeToStruct(currentTime, dt);
+   
+   if(lastDayChecked != dt.day)
+   {
+      lastDayChecked = dt.day;
+      tradesToday = 0;
+      totalProfitToday = 0;
+      dailyEquityHigh = AccountInfoDouble(ACCOUNT_EQUITY);
+      Print("Novo dia - estatísticas resetadas");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CALCULAR LUCRO HOJE                                             |
+//+------------------------------------------------------------------+
+double CalculateProfitToday()
+{
+   double profit = 0;
+   
+   // Posições abertas
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         if(PositionSelectByTicket(ticket))
+         {
+            if(PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+            {
+               profit += PositionGetDouble(POSITION_PROFIT);
+            }
+         }
+      }
+   }
+   
+   // Histórico do dia
+   datetime startOfDay = iTime(_Symbol, PERIOD_D1, 0);
+   HistorySelect(startOfDay, TimeCurrent());
+   
+   int totalDeals = HistoryDealsTotal();
+   for(int i = 0; i < totalDeals; i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) == MagicNumber)
+      {
+         profit += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      }
+   }
+   
+   return profit;
+}
+
+//+------------------------------------------------------------------+
+//| VERIFICAR CONDIÇÕES DE TRADE                                    |
+//+------------------------------------------------------------------+
+bool CanTrade()
+{
+   ResetDailyStats();
+   
+   // Verificar posição aberta
+   if(HasOpenPosition()) 
+   {
+      return false;
+   }
+   
+   // Verificar limite diário
+   if(tradesToday >= MaxTradesPerDay) 
+   {
+      Print("Limite diário: ", tradesToday, "/", MaxTradesPerDay);
+      return false;
+   }
+   
+   // Verificar volatilidade
+   if(!CheckVolatility()) return false;
+   
+   // Verificar horário
+   if(!CheckTradingTime()) return false;
+   
+   // Verificar spread
+   long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(spread > MaxSpread * 10) 
+   {
+      Print("Spread alto: ", spread);
+      return false;
+   }
+   
+   // Cooldown entre trades
+   if(lastTradeTime > 0)
+   {
+      double minutes = (TimeCurrent() - lastTradeTime) / 60.0;
+      if(minutes < 10.0) return false;
+   }
+   
+   // Calcular lucro diário
+   totalProfitToday = CalculateProfitToday();
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| OBTER VALORES DOS INDICADORES                                   |
+//+------------------------------------------------------------------+
+double GetRSI()
+{
+   double rsi[1];
+   if(CopyBuffer(handleRSI, 0, 0, 1, rsi) == 1)
+      return rsi[0];
+   return 50.0;
+}
+
+double GetEMAFast()
+{
+   double ema[1];
+   if(CopyBuffer(handleEMAFast, 0, 0, 1, ema) == 1)
+      return ema[0];
+   return 0;
+}
+
+double GetEMASlow()
+{
+   double ema[1];
+   if(CopyBuffer(handleEMASlow, 0, 0, 1, ema) == 1)
+      return ema[0];
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| GERAR SINAL                                                     |
+//+------------------------------------------------------------------+
+int GenerateSignal()
+{
+   double rsi = GetRSI();
+   double emaFast = GetEMAFast();
+   double emaSlow = GetEMASlow();
+   
+   if(emaFast == 0 || emaSlow == 0) return -1;
+   
+   bool trendBullish = (emaFast > emaSlow);
+   
+   if(trendBullish)
+   {
+      if(rsi < RSIOversold)
+      {
+         Print("SINAL BUY: RSI=", rsi);
+         return ORDER_TYPE_BUY;
+      }
+   }
+   else
+   {
+      if(rsi > RSIOverbought)
+      {
+         Print("SINAL SELL: RSI=", rsi);
+         return ORDER_TYPE_SELL;
+      }
+   }
+   
+   return -1;
+}
+
+//+------------------------------------------------------------------+
+//| CALCULAR LOTE                                                   |
+//+------------------------------------------------------------------+
+double CalculateLot()
+{
+   double lot = LotSize;
+   
+   if(UseDynamicLot)
+   {
+      double balance = AccountInfoDouble(ACCOUNT_EQUITY);
+      double riskAmount = balance * (RiskPercent / 100.0);
+      double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      
+      double slPips = 100.0; // SL base de 100 pips
+      if(Enable2024Mode)
+         slPips *= SLMultiplier2024;
+      
+      double riskPerLot = slPips * point * tickValue / tickSize;
+      if(riskPerLot > 0)
+      {
+         lot = riskAmount / riskPerLot;
+         double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+         lot = MathFloor(lot / lotStep) * lotStep;
+         
+         double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+         lot = MathMax(minLot, MathMin(maxLot, lot));
+      }
+   }
+   
+   if(Enable2024Mode)
+   {
+      lot *= LotMultiplier2024;
+      Print("MODO 2024: Lote x", LotMultiplier2024, " = ", lot);
+   }
+   
+   return NormalizeDouble(lot, 2);
+}
+
+//+------------------------------------------------------------------+
+//| CALCULAR TP                                                     |
+//+------------------------------------------------------------------+
+double CalculateTPPips()
+{
+   double tpPips = 150.0; // TP base de 150 pips
+   
+   if(Enable2024Mode)
+      tpPips *= TPMultiplier2024;
+   
+   return tpPips;
+}
+
+//+------------------------------------------------------------------+
+//| GERENCIAR POSIÇÃO                                               |
+//+------------------------------------------------------------------+
+void ManagePosition(ulong ticket)
+{
+   if(!PositionSelectByTicket(ticket)) return;
+   
+   int type = (int)PositionGetInteger(POSITION_TYPE);
+   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+   double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+   double currentSL = PositionGetDouble(POSITION_SL);
+   double currentTP = PositionGetDouble(POSITION_TP);
+   double volume = PositionGetDouble(POSITION_VOLUME);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   
+   // Calcular distância do SL
+   double slDistance = 0;
+   if(type == POSITION_TYPE_BUY)
+      slDistance = (openPrice - currentSL) / point;
+   else
+      slDistance = (currentSL - openPrice) / point;
+   
+   // Calcular lucro atual em pips
+   double currentProfit = 0;
+   if(type == POSITION_TYPE_BUY)
+      currentProfit = (currentPrice - openPrice) / point;
+   else
+      currentProfit = (openPrice - currentPrice) / point;
+   
+   // Calcular RR atual
+   double currentRR = (slDistance > 0) ? (currentProfit / slDistance) : 0;
+   
+   // 1. FECHAMENTOS PARCIAIS
+   if(UsePartialClose && volume > 0.1)
+   {
+      if(currentRR >= Close1atRR && currentRR < Close2atRR)
+      {
+         double closeVolume = volume * 0.25;
+         if(trade.PositionClosePartial(ticket, closeVolume))
+         {
+            Print("Fechamento parcial 25% em RR ", currentRR);
+            trade.PositionModify(ticket, openPrice, currentTP);
+         }
+      }
+      else if(currentRR >= Close2atRR && currentRR < Close3atRR)
+      {
+         double closeVolume = volume * 0.25;
+         if(trade.PositionClosePartial(ticket, closeVolume))
+         {
+            Print("Fechamento parcial 25% em RR ", currentRR);
+         }
+      }
+      else if(currentRR >= Close3atRR)
+      {
+         double closeVolume = volume * 0.25;
+         if(trade.PositionClosePartial(ticket, closeVolume))
+         {
+            Print("Fechamento parcial 25% em RR ", currentRR);
+         }
+      }
+   }
+   
+   // 2. TRAILING STOP
+   if(UseTrailingStop && currentRR >= 1.5)
+   {
+      double newSL = 0;
+      if(type == POSITION_TYPE_BUY)
+      {
+         newSL = currentPrice - (slDistance * TrailingStep * point);
+         if(newSL > currentSL)
+         {
+            trade.PositionModify(ticket, newSL, currentTP);
+            Print("Trailing stop atualizado: ", newSL);
+         }
+      }
+      else
+      {
+         newSL = currentPrice + (slDistance * TrailingStep * point);
+         if(newSL < currentSL)
+         {
+            trade.PositionModify(ticket, newSL, currentTP);
+            Print("Trailing stop atualizado: ", newSL);
+         }
+      }
+   }
+   
+   // 3. BREAKEVEN
+   if(UseBreakeven && currentRR >= BreakevenAtRR)
+   {
+      if((type == POSITION_TYPE_BUY && currentSL < openPrice) ||
+         (type == POSITION_TYPE_SELL && currentSL > openPrice))
+      {
+         trade.PositionModify(ticket, openPrice, currentTP);
+         Print("Breakeven ativado em RR ", currentRR);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| EXECUTAR TRADE                                                  |
+//+------------------------------------------------------------------+
+bool ExecuteTrade(int type)
+{
+   double lot = CalculateLot();
+   double price = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
+                                           : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   
+   double slPips = 100.0;
+   double tpPips = CalculateTPPips();
+   
+   if(Enable2024Mode)
+   {
+      slPips *= SLMultiplier2024;
+      tpPips *= TPMultiplier2024;
+   }
+   
+   double sl = 0;
+   double tp = 0;
+   
+   if(type == ORDER_TYPE_BUY)
+   {
+      sl = price - (slPips * point);
+      tp = price + (tpPips * point);
+   }
+   else
+   {
+      sl = price + (slPips * point);
+      tp = price - (tpPips * point);
+   }
+   
+   // Garantir que SL e TP sejam válidos
+   if(type == ORDER_TYPE_BUY)
+   {
+      if(sl >= price) sl = price - (10 * point);
+      if(tp <= price) tp = price + (10 * point);
+   }
+   else
+   {
+      if(sl <= price) sl = price + (10 * point);
+      if(tp >= price) tp = price - (10 * point);
+   }
+   
+   MqlTradeRequest request;
+   ZeroMemory(request);
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = _Symbol;
+   request.volume = lot;
+   request.type = (type == ORDER_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   request.price = price;
+   request.sl = sl;
+   request.tp = tp;
+   request.deviation = 10;
+   request.magic = MagicNumber;
+   request.comment = "FUNDEDNEXT2024";
+   request.type_filling = ORDER_FILLING_IOC;
+   
+   MqlTradeResult result;
+   ZeroMemory(result);
+   
+   bool success = OrderSend(request, result);
+   
+   if(success && result.retcode == TRADE_RETCODE_DONE)
+   {
+      lastTradeTime = TimeCurrent();
+      tradesToday++;
+      
+      Print("Trade #", tradesToday, " ", (type == ORDER_TYPE_BUY ? "BUY" : "SELL"));
+      Print("Lote: ", lot, " Preço: ", price);
+      Print("SL: ", slPips, " pips (", sl, ")");
+      Print("TP: ", tpPips, " pips (", tp, ")");
+      
+      // Iniciar timer para gerenciamento
+      EventSetTimer(30);
+      
+      return true;
+   }
+   else
+   {
+      Print("Erro no trade: ", GetLastError());
+      return false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ON TIMER                                                        |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   // Gerenciar todas as posições abertas
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         ManagePosition(ticket);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ON TICK                                                         |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   if(!CanTrade()) return;
+   
+   int signal = GenerateSignal();
+   if(signal != -1)
+   {
+      ExecuteTrade(signal);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| DEINIT                                                          |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   if(handleRSI != INVALID_HANDLE) IndicatorRelease(handleRSI);
+   if(handleEMAFast != INVALID_HANDLE) IndicatorRelease(handleEMAFast);
+   if(handleEMASlow != INVALID_HANDLE) IndicatorRelease(handleEMASlow);
+   if(handleATR != INVALID_HANDLE) IndicatorRelease(handleATR);
+   
+   EventKillTimer();
+   
+   Print("=== RESULTADO FINAL ===");
+   Print("Trades executados hoje: ", tradesToday);
+   Print("Lucro estimado hoje: $", totalProfitToday);
+}
+//+------------------------------------------------------------------+
