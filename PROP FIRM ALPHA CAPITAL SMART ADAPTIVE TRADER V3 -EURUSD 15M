@@ -20,8 +20,8 @@ input int      MaxTradesPerDay = 5;
 
 input group "=== ESTRATÉGIA ORIGINAL ==="
 input int      RSIPeriod = 14;
-input double   RSIOverbought = 65.0;
-input double   RSIOversold = 35.0;
+input double   RSIOverbought = 68.0;
+input double   RSIOversold = 33.0;
 input int      EMAFastPeriod = 16;
 input int      EMASlowPeriod = 200;
 
