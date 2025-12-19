@@ -1,29 +1,28 @@
 //+------------------------------------------------------------------+
-//|                 SMART ADAPTIVE TRADER V3 - ALPHACAPITAL EURUSD 15M                        |
-//|    Ajusta lotes baseado na volatilidade, NÃO muda estratégia  |
+//|        ALPHA CAPITAL SMART ADAPTATIVE TRADER V5 "PropSafe"         |
 //+------------------------------------------------------------------+
-#property copyright "Smart Lot Size EA"
-#property version   "37.0"
-#property description "Apenas ajusta lotes dinamicamente - estratégia original"
+#property copyright "FUNDEDNEXT SMART ADAPTATIVE TRADER V5"
+#property version   "39.0"
+#property description "PropSafe EA: ATR relativo, cap diÃ¡rio, ajuste por drawdown"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //+------------------------------------------------------------------+
-//| CONFIGURAÇÃO ORIGINAL (NÃO MEXER)                             |
+//| CONFIGURAÃ‡ÃƒO ORIGINAL                                           |
 //+------------------------------------------------------------------+
-input group "=== CONFIGURAÇÃO ORIGINAL ==="
+input group "=== CONFIGURAÃ‡ÃƒO ORIGINAL ==="
 input int      MagicNumber = 777888;
 input double   BaseLotSize = 0.5;
-input double   RiskPercent = 0.5;
-input double   MaxSpread = 10.0;
-input int      MaxTradesPerDay = 5;
+input double   RiskPercent = 0.5;           // % do saldo por trade
+input double   MaxSpread = 10.0;            // Max spread permitido (pips)
+input int      MaxTradesPerDay = 5;         // Limite de trades/dia
 
-input group "=== ESTRATÉGIA ORIGINAL ==="
+input group "=== ESTRATÃ‰GIA ORIGINAL ==="
 input int      RSIPeriod = 14;
-input double   RSIOverbought = 68.0;
-input double   RSIOversold = 33.0;
+input double   RSIOverbought = 65.0;
+input double   RSIOversold = 35.0;
 input int      EMAFastPeriod = 16;
 input int      EMASlowPeriod = 200;
 
@@ -32,72 +31,89 @@ input double   StopLossPips = 100.0;
 input double   TakeProfitPips = 150.0;
 
 //+------------------------------------------------------------------+
-//| AJUSTE DINÂMICO DE LOTES (APENAS ISSO)                       |
+//| AJUSTE DINÃ‚MICO DE LOTES                                        |
 //+------------------------------------------------------------------+
-input group "=== AJUSTE DINÂMICO LOTES ==="
+input group "=== AJUSTE DINÃ‚MICO LOTES ==="
 input bool     EnableDynamicLotAdjustment = true;
-input double   LowVolatilityMultiplier = 0.6;   // Lotes MENORES em baixa volatilidade
-input double   HighVolatilityMultiplier = 1.2;  // Lotes MAIORES em alta volatilidade
-input double   LowATR_Threshold = 0.00020;      // ATR baixo (condições 2024)
-input double   HighATR_Threshold = 0.00040;     // ATR alto (condições normais)
+input double   LowVolatilityMultiplier = 0.6;   // Lotes menores em baixa volatilidade
+input double   HighVolatilityMultiplier = 1.2;  // Lotes maiores em alta volatilidade
+input double   LowATR_Percent  = 0.0008;        // ATR <0.08% -> baixa volatilidade
+input double   HighATR_Percent = 0.0012;        // ATR >0.12% -> alta volatilidade
+
+input group "=== CAP DIÃRIO ==="
+input double   DailyLossLimitPercent = 2.0;    // MÃ¡x perda diÃ¡ria % do saldo
+input double   MaxDrawdownMultiplier = 0.5;    // ReduÃ§Ã£o de lotes quando drawdown diÃ¡rio
 
 //+------------------------------------------------------------------+
-//| VARIÁVEIS                                                      |
+//| VARIÃVEIS                                                        |
 //+------------------------------------------------------------------+
 int handleRSI, handleEMAFast, handleEMASlow, handleATR;
 datetime lastTradeTime = 0;
 int tradesToday = 0;
 datetime lastDayChecked = 0;
 double currentLotMultiplier = 1.0;
+double dailyLossStartBalance = 0;
+bool dailyLossExceeded = false;
 
 //+------------------------------------------------------------------+
-//| INICIALIZAÇÃO                                                  |
+//| INICIALIZAÃ‡ÃƒO                                                    |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("=== SMART LOT SIZE EA ===");
-   Print("ESTRATÉGIA: Mantém ORIGINAL, apenas ajusta lotes dinamicamente");
-   
+   Print("=== SMART LOT SIZE EA V5 PropSafe ===");
+   Print("ATR relativo, cap diÃ¡rio, ajuste por drawdown");
+
    handleRSI = iRSI(_Symbol, _Period, RSIPeriod, PRICE_CLOSE);
    handleEMAFast = iMA(_Symbol, _Period, EMAFastPeriod, 0, MODE_EMA, PRICE_CLOSE);
    handleEMASlow = iMA(_Symbol, _Period, EMASlowPeriod, 0, MODE_EMA, PRICE_CLOSE);
    handleATR = iATR(_Symbol, _Period, 14);
-   
+
+   // Iniciar saldo para cap diÃ¡rio
+   dailyLossStartBalance = AccountInfoDouble(ACCOUNT_EQUITY);
+
    return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
-//| CALCULAR MULTIPLICADOR DE LOTE BASEADO NO ATR                |
+//| CALCULAR MULTIPLICADOR DE LOTE (ATR RELATIVO + Drawdown)        |
 //+------------------------------------------------------------------+
 double CalculateLotMultiplier()
 {
-   if(!EnableDynamicLotAdjustment) return 1.0;
-   
+   if(!EnableDynamicLotAdjustment)
+      return 1.0;
+
    double atrValue[1];
-   if(CopyBuffer(handleATR, 0, 0, 1, atrValue) == 1)
+   if(CopyBuffer(handleATR, 0, 0, 1, atrValue) != 1)
+      return 1.0;
+
+   double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(price <= 0)
+      return 1.0;
+
+   // ATR relativo (% do preÃ§o)
+   double atrPercent = atrValue[0] / price;
+
+   if(atrPercent < LowATR_Percent)
+      currentLotMultiplier = LowVolatilityMultiplier;
+   else if(atrPercent > HighATR_Percent)
+      currentLotMultiplier = HighVolatilityMultiplier;
+   else
+      currentLotMultiplier = 1.0;
+
+   // ReduÃ§Ã£o por drawdown diÃ¡rio
+   double currentDrawdown = (dailyLossStartBalance - AccountInfoDouble(ACCOUNT_EQUITY)) / dailyLossStartBalance;
+   if(currentDrawdown > 0)
    {
-      if(atrValue[0] < LowATR_Threshold)
-      {
-         // Condições 2024: volatilidade BAIXA
-         currentLotMultiplier = LowVolatilityMultiplier;
-         Print("Low volatility: ATR=", atrValue[0], " -> Lot x", currentLotMultiplier);
-         return currentLotMultiplier;
-      }
-      else if(atrValue[0] > HighATR_Threshold)
-      {
-         // Condições normais/altas: volatilidade ALTA
-         currentLotMultiplier = HighVolatilityMultiplier;
-         Print("High volatility: ATR=", atrValue[0], " -> Lot x", currentLotMultiplier);
-         return currentLotMultiplier;
-      }
+      double drawdownFactor = MathMax(0.0, 1.0 - currentDrawdown / MaxDrawdownMultiplier);
+      currentLotMultiplier *= drawdownFactor;
    }
-   
-   currentLotMultiplier = 1.0;
+
+   Print("ATR%=", atrPercent, " | Lot multiplier=", currentLotMultiplier, " | Drawdown factor applied");
    return currentLotMultiplier;
 }
 
 //+------------------------------------------------------------------+
-//| FUNÇÕES BÁSICAS (ORIGINAIS)                                  |
+//| FUNÃ‡Ã•ES BÃSICAS                                                  |
 //+------------------------------------------------------------------+
 bool HasOpenPosition()
 {
@@ -108,98 +124,100 @@ void ResetDailyStats()
 {
    MqlDateTime dt;
    TimeCurrent(dt);
-   
+
    if(lastDayChecked != dt.day)
    {
       lastDayChecked = dt.day;
       tradesToday = 0;
+      dailyLossStartBalance = AccountInfoDouble(ACCOUNT_EQUITY);
+      dailyLossExceeded = false;
    }
 }
 
 bool CanTrade()
 {
    ResetDailyStats();
-   
+
+   if(dailyLossExceeded) return false; // Cap diÃ¡rio atingido
    if(HasOpenPosition()) return false;
    if(tradesToday >= MaxTradesPerDay) return false;
-   
+
    long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    if(spread > MaxSpread * 10) return false;
-   
+
    if(lastTradeTime > 0)
    {
       double minutes = (TimeCurrent() - lastTradeTime) / 60.0;
       if(minutes < 30.0) return false;
    }
-   
+
+   // Verificar cap diÃ¡rio
+   double dailyLoss = dailyLossStartBalance - AccountInfoDouble(ACCOUNT_EQUITY);
+   if(dailyLoss / dailyLossStartBalance * 100.0 >= DailyLossLimitPercent)
+   {
+      dailyLossExceeded = true;
+      Print("Daily loss limit reached: ", DailyLossLimitPercent, "% -> trading stopped today");
+      return false;
+   }
+
    return true;
 }
 
 //+------------------------------------------------------------------+
-//| GERAR SINAL (ORIGINAL - NÃO MUDAR)                           |
+//| GERAR SINAL                                                      |
 //+------------------------------------------------------------------+
 int GenerateSignal()
 {
    double rsi[1], emaFast[1], emaSlow[1];
-   
+
    if(CopyBuffer(handleRSI, 0, 0, 1, rsi) != 1) return -1;
    if(CopyBuffer(handleEMAFast, 0, 0, 1, emaFast) != 1) return -1;
    if(CopyBuffer(handleEMASlow, 0, 0, 1, emaSlow) != 1) return -1;
-   
+
    bool trendBullish = (emaFast[0] > emaSlow[0]);
-   
+
    if(rsi[0] < RSIOversold && trendBullish)
-   {
-      Print("BUY: RSI=", rsi[0]);
       return ORDER_TYPE_BUY;
-   }
-   
+
    if(rsi[0] > RSIOverbought && !trendBullish)
-   {
-      Print("SELL: RSI=", rsi[0]);
       return ORDER_TYPE_SELL;
-   }
-   
+
    return -1;
 }
 
 //+------------------------------------------------------------------+
-//| CALCULAR LOTE DINÂMICO                                        |
+//| CALCULAR LOTE DINÃ‚MICO                                           |
 //+------------------------------------------------------------------+
 double CalculateLot()
 {
    double lot = BaseLotSize;
-   
-   // Calcular baseado no risco
+
    double balance = AccountInfoDouble(ACCOUNT_EQUITY);
    double riskAmount = balance * (RiskPercent / 100.0);
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   
+
    double riskPerLot = StopLossPips * point * tickValue / tickSize;
    if(riskPerLot > 0)
    {
       lot = riskAmount / riskPerLot;
       double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
       lot = MathFloor(lot / lotStep) * lotStep;
-      
+
       double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
       double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
       lot = MathMax(minLot, MathMin(maxLot, lot));
    }
-   
-   // Aplicar multiplicador dinâmico
+
    double multiplier = CalculateLotMultiplier();
    lot *= multiplier;
-   
-   Print("Lot: ", lot, " (Base: ", BaseLotSize, " x ", multiplier, ")");
-   
+
    return NormalizeDouble(lot, 2);
 }
 
 //+------------------------------------------------------------------+
-//| EXECUTAR TRADE (ORIGINAL)                                     |
+//| EXECUTAR TRADE                                                   |
 //+------------------------------------------------------------------+
 bool ExecuteTrade(int signalType)
 {
@@ -207,9 +225,8 @@ bool ExecuteTrade(int signalType)
    double price = (signalType == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                                                  : SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   
+
    double sl = 0, tp = 0;
-   
    if(signalType == ORDER_TYPE_BUY)
    {
       sl = price - (StopLossPips * point);
@@ -220,7 +237,7 @@ bool ExecuteTrade(int signalType)
       sl = price + (StopLossPips * point);
       tp = price - (TakeProfitPips * point);
    }
-   
+
    MqlTradeRequest request = {};
    request.action = TRADE_ACTION_DEAL;
    request.symbol = _Symbol;
@@ -231,42 +248,38 @@ bool ExecuteTrade(int signalType)
    request.tp = tp;
    request.deviation = 10;
    request.magic = MagicNumber;
-   request.comment = "SMART_LOT";
+   request.comment = "SMART_LOT_PropSafe";
    request.type_filling = ORDER_FILLING_IOC;
-   
+
    MqlTradeResult result;
    if(OrderSend(request, result) && result.retcode == TRADE_RETCODE_DONE)
    {
       lastTradeTime = TimeCurrent();
       tradesToday++;
-      
-      Print("Trade #", tradesToday, " ", (signalType == ORDER_TYPE_BUY ? "BUY" : "SELL"));
-      Print("Lot: ", lot, " SL: ", StopLossPips, "p TP: ", TakeProfitPips, "p");
-      
+      Print("Trade #", tradesToday, " ", (signalType == ORDER_TYPE_BUY ? "BUY" : "SELL"),
+            " Lot: ", lot, " SL: ", StopLossPips, "p TP: ", TakeProfitPips, "p");
       return true;
    }
-   
+
    return false;
 }
 
 //+------------------------------------------------------------------+
-//| ON TICK                                                        |
+//| ON TICK                                                          |
 //+------------------------------------------------------------------+
 void OnTick()
 {
    static datetime lastBar = 0;
    datetime currentBar = iTime(_Symbol, _Period, 0);
-   
+
    if(lastBar == currentBar) return;
    lastBar = currentBar;
-   
+
    if(!CanTrade()) return;
-   
+
    int signal = GenerateSignal();
    if(signal != -1)
-   {
       ExecuteTrade(signal);
-   }
 }
 
 //+------------------------------------------------------------------+
@@ -278,4 +291,3 @@ void OnDeinit(const int reason)
    Print("Total trades: ", tradesToday);
    Print("Avg lot multiplier: ", currentLotMultiplier);
 }
-//+------------------------------------------------------------------+
