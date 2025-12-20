@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
-//|        ACTIVTRADES SMART ADAPTATIVE TRADER V6 PROP SAFE         |
+//|        ACTIVTRADES SMART ADAPTATIVE TRADER V6
 //+------------------------------------------------------------------+
-#property copyright "FUNDEDNEXT SMART ADAPTATIVE TRADER V6 PROP SAFE"
+#property copyright "ACTIVTRADES SMART ADAPTATIVE TRADER V6"
 #property version   "40.0"
-#property description "PropFirm EA: ATR relativo, cap diário, ajuste por drawdown, regime ON/OFF"
+#property description "EA: ATR relativo, cap diário, ajuste por drawdown, regime ON/OFF"
 #property strict
 
 #include <Trade\Trade.mqh>
