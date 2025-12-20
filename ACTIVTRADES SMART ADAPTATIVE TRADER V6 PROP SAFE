@@ -1,8 +1,9 @@
 //+------------------------------------------------------------------+
-//|   ACTIVTRADES SMART ADAPTATIVE TRADER V5.1 (PROP HARDENED)        |
+//|        ACTIVTRADES SMART ADAPTATIVE TRADER V6 PROP SAFE         |
 //+------------------------------------------------------------------+
-#property copyright "FUNDEDNEXT SMART ADAPTATIVE TRADER V5.1"
-#property version   "39.1"
+#property copyright "FUNDEDNEXT SMART ADAPTATIVE TRADER V6 PROP SAFE"
+#property version   "40.0"
+#property description "PropFirm EA: ATR relativo, cap diário, ajuste por drawdown, regime ON/OFF"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -17,9 +18,6 @@ input double   RiskPercent = 0.5;
 input double   MaxSpread = 10.0;
 input int      MaxTradesPerDay = 5;
 
-//+------------------------------------------------------------------+
-//| ESTRATÉGIA ORIGINAL                                              |
-//+------------------------------------------------------------------+
 input group "=== ESTRATÉGIA ORIGINAL ==="
 input int      RSIPeriod = 14;
 input double   RSIOverbought = 68.0;
@@ -27,9 +25,6 @@ input double   RSIOversold = 33.0;
 input int      EMAFastPeriod = 16;
 input int      EMASlowPeriod = 200;
 
-//+------------------------------------------------------------------+
-//| RISCO ORIGINAL                                                   |
-//+------------------------------------------------------------------+
 input group "=== RISCO ORIGINAL ==="
 input double   StopLossPips = 100.0;
 input double   TakeProfitPips = 150.0;
@@ -41,11 +36,11 @@ input group "=== AJUSTE DINÂMICO LOTES ==="
 input bool     EnableDynamicLotAdjustment = true;
 input double   LowVolatilityMultiplier = 0.6;
 input double   HighVolatilityMultiplier = 1.2;
-input double   LowATR_Percent = 0.15;
-input double   HighATR_Percent = 0.35;
+input double   LowATR_Percent = 0.15;   // ATR < 0.15% do preço
+input double   HighATR_Percent = 0.35;  // ATR > 0.35% do preço
 
 //+------------------------------------------------------------------+
-//| HUMANIZAÇÃO EXECUÇÃO                                             |
+//| HUMANIZAÇÃO EXECUÇÃO (M15 SAFE)                                   |
 //+------------------------------------------------------------------+
 input group "=== EXECUÇÃO HUMANIZADA ==="
 input bool     EnableHumanDelay = true;
@@ -53,13 +48,17 @@ input int      MinDelaySeconds = 3;
 input int      MaxDelaySeconds = 15;
 
 //+------------------------------------------------------------------+
-//| PROP HARDENING                                                   |
+//| CONFIGURAÇÃO PROP FIRM                                            |
 //+------------------------------------------------------------------+
-input group "=== PROP HARDENING ==="
-input double   LotRandomnessPercent = 2.0;    // ±2%
-input int      SL_RandomPips = 3;              // ±3 pips
-input int      TP_RandomPips = 5;              // ±5 pips
-input int      SkipTradeProbability = 8;       // % de trades ignorados
+input group "=== PROP FIRM SETTINGS ==="
+enum PropFirm {FTMO=0, ALPHA=1, FUNDEDNEXT=2};
+input PropFirm SelectedPropFirm = FTMO;
+
+// Limites diários e máximos
+double DailyDDLimit, MaxDDLimit, MaxConsecutiveLosses;
+double DailyDD = 0;
+double MaxDD = 0;
+int ConsecutiveLosses = 0;
 
 //+------------------------------------------------------------------+
 //| VARIÁVEIS                                                        |
@@ -72,6 +71,7 @@ int tradesToday = 0;
 bool delayActive = false;
 datetime signalTime = 0;
 int pendingSignal = -1;
+string Regime = "ON"; // ON, OFF, ON FULL, ON LIGHT
 
 //+------------------------------------------------------------------+
 //| INIT                                                             |
@@ -83,6 +83,27 @@ int OnInit()
    handleEMASlow = iMA(_Symbol, _Period, EMASlowPeriod, 0, MODE_EMA, PRICE_CLOSE);
    handleATR = iATR(_Symbol, _Period, 14);
    MathSrand((uint)TimeLocal());
+
+   // Configura limites por prop firm
+   switch(SelectedPropFirm)
+   {
+      case FTMO:
+         DailyDDLimit = 0.02; // 2%
+         MaxDDLimit   = 0.10; // 10%
+         MaxConsecutiveLosses = 2;
+         break;
+      case ALPHA:
+         DailyDDLimit = 0.015; // 1.5%
+         MaxDDLimit   = 0.08;  // 8%
+         MaxConsecutiveLosses = 2;
+         break;
+      case FUNDEDNEXT:
+         DailyDDLimit = 0.025; // 2.5%
+         MaxDDLimit   = 0.12;  // 12%
+         MaxConsecutiveLosses = 2;
+         break;
+   }
+
    return INIT_SUCCEEDED;
 }
 
@@ -102,26 +123,33 @@ void ResetDailyStats()
    {
       lastDayChecked = dt.day;
       tradesToday = 0;
+      DailyDD = 0;
+      ConsecutiveLosses = 0;
+      Regime = "ON";
    }
 }
 
 bool CanTrade()
 {
    ResetDailyStats();
+
+   if(Regime == "OFF") return false;
    if(HasOpenPosition()) return false;
    if(tradesToday >= MaxTradesPerDay) return false;
 
    long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    if(spread > MaxSpread * 10) return false;
 
-   if(lastTradeTime > 0 && (TimeCurrent() - lastTradeTime) < 1800)
-      return false;
+   if(lastTradeTime > 0)
+   {
+      if((TimeCurrent() - lastTradeTime) < 1800) return false;
+   }
 
    return true;
 }
 
 //+------------------------------------------------------------------+
-//| SINAL                                                            |
+//| SINAL ORIGINAL                                                   |
 //+------------------------------------------------------------------+
 int GenerateSignal()
 {
@@ -138,7 +166,7 @@ int GenerateSignal()
 }
 
 //+------------------------------------------------------------------+
-//| MULTIPLICADOR ATR                                                |
+//| MULTIPLICADOR ATR RELATIVO                                       |
 //+------------------------------------------------------------------+
 double CalculateLotMultiplier()
 {
@@ -164,6 +192,11 @@ double CalculateLot()
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double riskAmount = equity * (RiskPercent / 100.0);
 
+   // Ajuste por drawdown
+   double currentDD = (AccountInfoDouble(ACCOUNT_BALANCE) - equity)/AccountInfoDouble(ACCOUNT_BALANCE);
+   if(currentDD > 0.05) riskAmount *= 0.3;
+   else if(currentDD > 0.03) riskAmount *= 0.5;
+
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double point     = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -173,10 +206,6 @@ double CalculateLot()
 
    double lot = riskAmount / riskPerLot;
    lot *= CalculateLotMultiplier();
-
-   // Ruído humano no lote
-   double noise = 1.0 + ((MathRand() % 1000) / 1000.0 - 0.5) * (LotRandomnessPercent / 100.0);
-   lot *= noise;
 
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -189,30 +218,25 @@ double CalculateLot()
 }
 
 //+------------------------------------------------------------------+
-//| EXECUTAR                                                         |
+//| EXECUTAR                                                        |
 //+------------------------------------------------------------------+
 void ExecuteTrade(int type)
 {
-   if(MathRand() % 100 < SkipTradeProbability) return;
-
    double lot = CalculateLot();
    if(lot <= 0) return;
 
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double price = (type == ORDER_TYPE_BUY)
                   ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
                   : SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   double slPips = StopLossPips + (MathRand() % (SL_RandomPips * 2 + 1) - SL_RandomPips);
-   double tpPips = TakeProfitPips + (MathRand() % (TP_RandomPips * 2 + 1) - TP_RandomPips);
-
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double sl = (type == ORDER_TYPE_BUY)
-               ? price - slPips * point
-               : price + slPips * point;
+               ? price - StopLossPips * point
+               : price + StopLossPips * point;
 
    double tp = (type == ORDER_TYPE_BUY)
-               ? price + tpPips * point
-               : price - tpPips * point;
+               ? price + TakeProfitPips * point
+               : price - TakeProfitPips * point;
 
    trade.SetExpertMagicNumber(MagicNumber);
    if(trade.PositionOpen(_Symbol, (ENUM_ORDER_TYPE)type, lot, price, sl, tp))
@@ -220,6 +244,43 @@ void ExecuteTrade(int type)
       lastTradeTime = TimeCurrent();
       tradesToday++;
    }
+}
+
+//+------------------------------------------------------------------+
+//| ATUALIZA REGIME / MONITORA DD                                     |
+//+------------------------------------------------------------------+
+void UpdateRegime(double profit)
+{
+   DailyDD += profit;
+   MaxDD = MathMax(MaxDD, AccountInfoDouble(ACCOUNT_BALANCE) - AccountInfoDouble(ACCOUNT_EQUITY));
+
+   // Consecutive losses
+   if(profit < 0) ConsecutiveLosses++;
+   else ConsecutiveLosses = 0;
+
+   if(DailyDD <= -DailyDDLimit*AccountInfoDouble(ACCOUNT_BALANCE) || 
+      MaxDD >= MaxDDLimit*AccountInfoDouble(ACCOUNT_BALANCE) ||
+      ConsecutiveLosses >= MaxConsecutiveLosses)
+      Regime = "OFF";
+   else if(DailyDD > -DailyDDLimit*AccountInfoDouble(ACCOUNT_BALANCE)/2)
+      Regime = "ON FULL";
+   else
+      Regime = "ON LIGHT";
+}
+
+//+------------------------------------------------------------------+
+//| EXIBIR REGIME NO GRÁFICO                                         |
+//+------------------------------------------------------------------+
+void DrawRegime()
+{
+   string txt = "Regime: "+Regime;
+   int x = 20;
+   int y = 20;
+   color c = clrLime;
+   if(Regime=="OFF") c=clrRed;
+   else if(Regime=="ON LIGHT") c=clrYellow;
+   else if(Regime=="ON FULL") c=clrGreen;
+   Comment(txt);
 }
 
 //+------------------------------------------------------------------+
@@ -231,7 +292,11 @@ void OnTick()
    if(barTime != lastBar)
    {
       lastBar = barTime;
-      if(!CanTrade()) return;
+      if(!CanTrade()) 
+      {
+         DrawRegime();
+         return;
+      }
 
       int signal = GenerateSignal();
       if(signal != -1)
@@ -241,8 +306,8 @@ void OnTick()
             delayActive = true;
             pendingSignal = signal;
             signalTime = TimeCurrent() +
-                         MinDelaySeconds +
-                         MathRand() % (MaxDelaySeconds - MinDelaySeconds + 1);
+                         MathRand() % (MaxDelaySeconds - MinDelaySeconds + 1)
+                         + MinDelaySeconds;
          }
          else
          {
@@ -259,4 +324,6 @@ void OnTick()
       delayActive = false;
       pendingSignal = -1;
    }
+
+   DrawRegime();
 }
